@@ -22,6 +22,7 @@ import android.media.session.PlaybackState
 import android.os.Binder
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.view.KeyEvent
 import androidx.annotation.StringRes
 import androidx.appcompat.app.AppCompatActivity
@@ -62,6 +63,7 @@ import org.jellyfin.mobile.utils.Constants.PLAYBACK_MANAGER_COMMAND_PLAY_PAUSE
 import org.jellyfin.mobile.utils.Constants.PLAYBACK_MANAGER_COMMAND_PREVIOUS
 import org.jellyfin.mobile.utils.Constants.PLAYBACK_MANAGER_COMMAND_REWIND
 import org.jellyfin.mobile.utils.Constants.PLAYBACK_MANAGER_COMMAND_STOP
+import org.jellyfin.mobile.utils.Constants.PREVIOUS_TRACK_RESTART_THRESHOLD_MS
 import org.jellyfin.mobile.utils.Constants.SUPPORTED_MUSIC_PLAYER_PLAYBACK_ACTIONS
 import org.jellyfin.mobile.utils.applyDefaultLocalAudioAttributes
 import org.jellyfin.mobile.utils.createMediaNotificationChannel
@@ -374,6 +376,39 @@ class RemotePlayerService : Service(), CoroutineScope {
         }
     }
 
+    /**
+     * Restart the current item if playback is far enough into it, otherwise skip to the previous one.
+     *
+     * The web client applies this to its own previous track button, but [WebappFunctionChannel.callPlaybackManagerAction]
+     * talks to the playback manager directly, which always skips. Without this, media session clients such as car
+     * head units behave differently to the in-app button.
+     */
+    private fun skipToPrevious() {
+        val currentState = playbackState
+        val canSeek = currentState != null && (currentState.actions and PlaybackState.ACTION_SEEK_TO) != 0L
+
+        if (currentState != null && canSeek && currentPosition(currentState) >= PREVIOUS_TRACK_RESTART_THRESHOLD_MS) {
+            webappFunctionChannel.seekTo(0)
+            setPlaybackState(currentState.state == PlaybackState.STATE_PLAYING, 0, canSeek = true)
+            return
+        }
+
+        webappFunctionChannel.callPlaybackManagerAction(PLAYBACK_MANAGER_COMMAND_PREVIOUS)
+    }
+
+    /**
+     * The position held by a [PlaybackState] is only accurate as of [PlaybackState.getLastPositionUpdateTime],
+     * and the webapp reports progress infrequently, so extrapolate while playing.
+     */
+    private fun currentPosition(state: PlaybackState): Long = when {
+        state.position == PlaybackState.PLAYBACK_POSITION_UNKNOWN -> PlaybackState.PLAYBACK_POSITION_UNKNOWN
+        state.state == PlaybackState.STATE_PLAYING -> {
+            val elapsed = SystemClock.elapsedRealtime() - state.lastPositionUpdateTime
+            state.position + (elapsed * state.playbackSpeed).toLong()
+        }
+        else -> state.position
+    }
+
     private fun setPlaybackState(isPlaying: Boolean, position: Long, canSeek: Boolean) {
         val playbackActions = when {
             canSeek -> SUPPORTED_MUSIC_PLAYER_PLAYBACK_ACTIONS or PlaybackState.ACTION_SEEK_TO
@@ -433,7 +468,7 @@ class RemotePlayerService : Service(), CoroutineScope {
                     }
 
                     override fun onSkipToPrevious() {
-                        webappFunctionChannel.callPlaybackManagerAction(PLAYBACK_MANAGER_COMMAND_PREVIOUS)
+                        skipToPrevious()
                     }
 
                     override fun onSkipToNext() {
@@ -481,7 +516,10 @@ class RemotePlayerService : Service(), CoroutineScope {
                         if (keyEvent.action != KeyEvent.ACTION_DOWN || keyEvent.repeatCount != 0) return command != null
                         else if (command == null) return super.onMediaButtonEvent(mediaButtonIntent)
 
-                        webappFunctionChannel.callPlaybackManagerAction(command)
+                        when (command) {
+                            PLAYBACK_MANAGER_COMMAND_PREVIOUS -> skipToPrevious()
+                            else -> webappFunctionChannel.callPlaybackManagerAction(command)
+                        }
                         return true
                     }
                 },

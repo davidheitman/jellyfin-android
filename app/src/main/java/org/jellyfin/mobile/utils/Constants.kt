@@ -74,6 +74,8 @@ object Constants {
         PlaybackState.ACTION_SKIP_TO_NEXT or
         PlaybackState.ACTION_SKIP_TO_PREVIOUS or
         PlaybackState.ACTION_SET_RATING
+    // Matches the threshold used by the web client's previous track button
+    const val PREVIOUS_TRACK_RESTART_THRESHOLD_MS = 5000L
     const val MEDIA_PLAYER_NOTIFICATION_ID = 42
     const val REMOTE_PLAYER_CONTENT_INTENT_REQUEST_CODE = 100
 
